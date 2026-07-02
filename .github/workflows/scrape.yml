@@ -1,0 +1,45 @@
+name: Scrape lectures
+
+# Runs the scraper on a schedule and on demand, sending any new/updated
+# lectures to Telegram. State is kept in Redis (external), so nothing needs to
+# be persisted between runs.
+#
+# NOTE: cron times are in UTC. Myanmar is UTC+6:30, so the times below fire at
+# ~08:00 and ~18:00 Asia/Yangon. Adjust to taste. GitHub may delay scheduled
+# runs by a few minutes under load.
+
+on:
+  schedule:
+    - cron: "30 1 * * *"   # 08:00 Asia/Yangon
+    - cron: "30 11 * * *"  # 18:00 Asia/Yangon
+  workflow_dispatch: {}     # "Run workflow" button (manual / on-demand)
+
+# Don't let two runs overlap (they'd race on the Redis state).
+concurrency:
+  group: scrape-lectures
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Scrape and send to Telegram
+        env:
+          UIT_USERNAME: ${{ secrets.UIT_USERNAME }}
+          UIT_PASSWORD: ${{ secrets.UIT_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: uv run python send_once.py
