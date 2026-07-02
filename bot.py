@@ -15,7 +15,8 @@ import redis
 import schedule
 
 import config
-from runner import DownloadedFile, run
+import notify
+from runner import run
 from state import HashStore
 from telegram_client import TelegramClient, TelegramError
 
@@ -42,24 +43,8 @@ class Bot:
         return not self.chat_id or str(chat_id) == str(self.chat_id)
 
     # --- sending -----------------------------------------------------------
-    def _send_file(self, chat_id, df: DownloadedFile) -> None:
-        label = "🆕 New" if df.status == "new" else "♻️ Updated"
-        caption = f"{label}: {df.course_title}\n{df.filename}"
-        size_mb = df.size / (1024 * 1024)
-
-        if size_mb > config.TELEGRAM_MAX_FILE_MB:
-            self.tg.send_message(
-                chat_id,
-                f"{caption}\n(⚠️ {size_mb:.1f} MB is over Telegram's "
-                f"{config.TELEGRAM_MAX_FILE_MB:.0f} MB limit — saved locally at "
-                f"{df.path})",
-            )
-            return
-
-        try:
-            self.tg.send_document(chat_id, df.path, caption=caption)
-        except Exception as exc:
-            self.tg.send_message(chat_id, f"Failed to send {df.filename}: {exc}")
+    def _send_file(self, chat_id, df) -> None:
+        notify.send_file(self.tg, chat_id, df)
 
     # --- running -----------------------------------------------------------
     def _do_run(self, chat_id) -> None:

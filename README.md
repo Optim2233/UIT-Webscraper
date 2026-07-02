@@ -84,13 +84,41 @@ rather than sent.
 > Scheduled times use the **server's local time zone**. Keep the bot process
 > running (e.g. under `systemd`, `tmux`, or a container) for schedules to fire.
 
+## Run for free on GitHub Actions (no server)
+
+Instead of hosting the always-on bot, you can let **GitHub Actions** run the
+scrape on a schedule and deliver lectures to Telegram — no server, no cost.
+State still lives in Redis, so runs pick up where the last one left off.
+
+The workflow is `.github/workflows/scrape.yml`. It runs on a cron schedule and
+via the **Run workflow** button (on-demand). `send_once.py` is the one-shot
+entry point it calls (it scrapes once and stays quiet when nothing is new).
+
+Setup:
+
+1. Push this repo to GitHub (the workflow must be on your **default branch**
+   for scheduled runs to fire).
+2. In the repo: **Settings → Secrets and variables → Actions → New repository
+   secret** — add each of:
+   `UIT_USERNAME`, `UIT_PASSWORD`, `REDIS_URL`, `TELEGRAM_BOT_TOKEN`,
+   `TELEGRAM_CHAT_ID`.
+3. Adjust the `cron:` times in the workflow if needed — **they are in UTC**
+   (Myanmar is UTC+6:30; the defaults fire ~08:00 and ~18:00 Asia/Yangon).
+4. Trigger a test run: **Actions → Scrape lectures → Run workflow**.
+
+> GitHub disables scheduled workflows after ~60 days of no repo activity, and
+> may delay scheduled runs by a few minutes. For an instant `/update` chat
+> command you need the always-on `bot.py` instead.
+
 ## Project layout
 
 | File                 | Responsibility                                     |
 | -------------------- | -------------------------------------------------- |
-| `main.py`            | One-shot CLI run                                   |
+| `main.py`            | One-shot CLI run (download only)                   |
+| `send_once.py`       | One-shot run that sends to Telegram (for cron/CI)  |
 | `bot.py`             | Telegram bot: scheduling, commands, delivery       |
 | `runner.py`          | Shared scrape-and-download logic                    |
+| `notify.py`          | Shared Telegram file-delivery helper               |
 | `telegram_client.py` | Minimal Telegram Bot API client                    |
 | `config.py`          | Environment-driven configuration                   |
 | `lms.py`             | Session creation and login                         |
