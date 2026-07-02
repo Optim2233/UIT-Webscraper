@@ -36,6 +36,8 @@ htmlcov/
 .env.*
 !.env.example
 
+downloads
+alpha_pruning_pruning
 # Generated scraper outputs
 Course_URL.txt
 Courses.txt

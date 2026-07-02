@@ -1,120 +1,92 @@
-import hashlib
-import json
+"""UIT LMS lecture scraper.
 
-import requests
-import urllib3
-from bs4 import BeautifulSoup
-import test
+Logs into the UIT Moodle LMS, crawls the configured courses, identifies file
+and folder lectures, and downloads only the ones that are new or have changed
+since the last run. Content hashes are stored in Redis to decide what is
+"updated".
+"""
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import os
+import sys
 
-USERNAME = "your uit username"
-PASSWORD = "your uit password#"
-LOGIN_URL = "https://lms.uit.edu.mm/login/index.php"
-STATE_FILE = "course_state.json"
+import redis
 
-COURSE_URLS = [
-    "https://lms.uit.edu.mm/course/view.php?id=2261",
-    "https://lms.uit.edu.mm/course/view.php?id=2277",
-    "https://lms.uit.edu.mm/course/view.php?id=2265",
-    "https://lms.uit.edu.mm/course/view.php?id=2264",
-    "https://lms.uit.edu.mm/course/view.php?id=2263",
-    "https://lms.uit.edu.mm/course/view.php?id=2262",
-    "https://lms.uit.edu.mm/course/view.php?id=2266",
-    "https://lms.uit.edu.mm/course/view.php?id=1743",
-    "https://lms.uit.edu.mm/course/view.php?id=1946",
-    "https://lms.uit.edu.mm/course/view.php?id=1943",
-    "https://lms.uit.edu.mm/course/view.php?id=2180",
-]
+import config
+import downloader
+import lms
+from state import HashStore
 
 
-session = requests.Session()
-session.verify = False
-
-resp = session.get(LOGIN_URL)
-soup = BeautifulSoup(resp.text, "html.parser")
-token = soup.find("input", {"name": "logintoken"})["value"]
-
-payload = {
-    "username": USERNAME,
-    "password": PASSWORD,
-    "logintoken": token,
-    "anchor": "",
-}
-post_resp = session.post(LOGIN_URL, data=payload)
-
-if "My courses" not in post_resp.text and "Dashboard" not in post_resp.text:
-    print("[-] Login failed. Check credentials.")
-    exit()
-
-print("[*] Logged in successfully.\n")
-
-try:
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        all_states = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    all_states = {}
-
-for course_url in COURSE_URLS:
+def process_course(session, store: HashStore, course_url: str) -> None:
     print(f"\n[*] Checking course: {course_url}")
     resp = session.get(course_url)
 
     if resp.status_code != 200:
         print(f"[-] Failed to fetch course. Status code: {resp.status_code}")
-        continue
+        return
+
+    from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(resp.text, "html.parser")
+    title = downloader.get_course_title(soup, course_url)
+    cid = downloader.course_id(course_url)
+    print(f"[*] Course title: {title}")
 
-    activities = []
-    course_title = ""
-    title_tag = soup.select_one(".page-header-headings h1")
+    course_dir = os.path.join(config.DOWNLOAD_DIR, downloader._sanitize(title))
+    activities = downloader.find_activities(soup)
+    print(f"[*] Found {len(activities)} lecture activities.")
 
-    if title_tag:
-        course_title = title_tag.get_text(strip=True)
-        print(f"[*] Course title: {course_title}")
-    else:
-        print("[-] Course title not found.")
+    for activity in activities:
+        print(f"  [*] {activity.kind}: {activity.name}")
+        try:
+            files = list(downloader.fetch_files(session, activity))
+        except Exception as exc:
+            print(f"    [-] Error fetching '{activity.name}': {exc}")
+            continue
 
-    for link in soup.select(".activityinstance .aalink"):
-        name_span = link.find("span", class_="instancename")
+        if not files:
+            print("    [-] No downloadable files found.")
+            continue
 
-        if name_span:
-            for hidden_text in name_span.select(".accesshide"):
-                hidden_text.decompose()
-            name = name_span.get_text(strip=True)
-        else:
-            name = link.get_text(strip=True)
+        for filename, data in files:
+            identity = f"{cid}/{filename}"
+            digest = downloader.content_hash(data)
 
-        url = link.get("href", "")
-        activities.append(f"{name}|{url}")
+            if not store.is_new_or_changed(identity, digest):
+                print(f"    [=] Unchanged: {filename}")
+                continue
 
-    activities.sort()
-    content_str = f"{course_title}\n" + "\n".join(activities)
-    current_hash = hashlib.md5(content_str.encode()).hexdigest()
+            existed = store.get(identity) is not None
+            path = downloader.save_file(course_dir, filename, data)
+            store.set(identity, digest)
+            state = "Updated" if existed else "New"
+            print(f"    [+] {state}: {filename} -> {path}")
 
-    old_state = all_states.get(course_url, {})
-    old_hash = old_state.get("hash")
 
-    if old_hash is None:
-        print("[*] First run for this course. Storing current activities.")
-    elif old_hash != current_hash:
-        print("[*] Course content changed. Current activities:")
-    else:
-        print("[*] No changes detected.")
+def main() -> int:
+    store = HashStore()
+    try:
+        store.ping()
+    except redis.RedisError as exc:
+        print(f"[-] Could not connect to Redis at {config.REDIS_URL}: {exc}")
+        return 1
 
-    if old_hash != current_hash:
-        for activity in activities:
-            name, url = activity.split("|", 1)
-            print(f"[*] Activity: {name}")
-            print(f"[*] URL: {url}")
+    session = lms.create_session()
+    if not lms.login(session):
+        return 1
+    print("[*] Logged in successfully.")
 
-    all_states[course_url] = {
-        "course_title": course_title,
-        "hash": current_hash,
-        "activities": activities,
-    }
+    os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
 
-with open(STATE_FILE, "w", encoding="utf-8") as f:
-    json.dump(all_states, f, indent=2)
+    for course_url in config.COURSE_URLS:
+        try:
+            process_course(session, store, course_url)
+        except Exception as exc:
+            print(f"[-] Error processing {course_url}: {exc}")
 
-print("\n[*] All course states saved.")
+    print("\n[*] Done.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
