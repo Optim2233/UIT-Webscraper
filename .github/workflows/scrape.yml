@@ -35,7 +35,24 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Check required secrets
+        id: secrets
+        env:
+          UIT_USERNAME: ${{ secrets.UIT_USERNAME }}
+          UIT_PASSWORD: ${{ secrets.UIT_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$UIT_USERNAME" ] && [ -n "$UIT_PASSWORD" ] && [ -n "$REDIS_URL" ] && [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping scrape because one or more required secrets are missing."
+          fi
+
       - name: Scrape and send to Telegram
+        if: steps.secrets.outputs.ready == 'true'
         env:
           UIT_USERNAME: ${{ secrets.UIT_USERNAME }}
           UIT_PASSWORD: ${{ secrets.UIT_PASSWORD }}
